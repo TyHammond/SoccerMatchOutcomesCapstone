@@ -1,4 +1,6 @@
 # Soccer Match Outcome Prediction using Machine Learning
+## Instructions
+Run code in EDA first and then MAIN
 
 ## Project Overview
 
