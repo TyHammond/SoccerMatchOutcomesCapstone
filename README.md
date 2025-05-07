@@ -1,6 +1,6 @@
 # SoccerMatchOutcomesCapstone
 
-README: Soccer Match Outcome Prediction using Machine Learning
+Soccer Match Outcome Prediction using Machine Learning
 
 Project Overview
 
