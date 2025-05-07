@@ -10,6 +10,10 @@ Language: R
 
 Packages: dplyr, ggplot2, caret, xgboost, randomForest, glmnet, tidyverse
 
+## Data Source
+
+All data was sourced from "https://www.football-data.co.uk/". We combined the Premier League data  with the Championship League data over multiple years to result in our combined_data.csv.
+
 ## Data Loading and Cleaning
 
 The dataset match_data_eda.csv loaded and preprocessed.
