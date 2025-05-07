@@ -1,0 +1,520 @@
+---
+title: "Capstone_Main"
+author: "Ty Hammond"
+date: "2025-04-08"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load Libraries
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(tidyr)
+library(caret)
+library(tidyverse)
+library(xgboost)
+library(randomForest)
+```
+
+Load Dataset
+
+```{r}
+match_data <- read_csv("C:/Users/tyham/OneDrive - Colostate/Capstone_Project/match_data_eda.csv", show_col_types = FALSE)
+```
+
+*OVERALL DATA PREPROCESSING*
+
+Ensure Date Column is Formatted Correct
+
+```{r}
+match_data$Date <- as.Date(match_data$Date, format = "%Y-%m-%d")
+```
+
+Handle Missing Data
+
+```{r}
+# Already Know whats missing from EDA
+# Only drops 2 rows
+match_data <- match_data %>%
+  drop_na(`B365>2.5`, `B365<2.5`)
+```
+
+Convert Categorical Data
+
+```{r}
+match_data <- match_data %>%
+  mutate(
+    FTR = as.factor(FTR),
+    OU_2.5 = as.factor(OU_2.5),
+    HomeTeam = as.factor(HomeTeam),
+    AwayTeam = as.factor(AwayTeam),
+    Div = as.factor(Div)
+  )
+```
+
+
+Data Preprocessing & Standardization
+
+```{r}
+# num cols
+numeric_features <- c("B365H", "B365D", "B365A",
+                      "imp_prob_H", "imp_prob_D", "imp_prob_A",
+                      "norm_prob_H", "norm_prob_D", "norm_prob_A")
+
+# standardize
+preproc <- preProcess(match_data[, numeric_features], method = c("center", "scale"))
+
+match_data_scaled <- match_data
+match_data_scaled[, numeric_features] <- predict(preproc, match_data[, numeric_features])
+```
+
+*Rolling Team Features*
+To get a measure of a teams history to get their form to predict matches
+
+Create a Home and Away Dataset, also renaming for clarity
+Doing this because teams play significantly different home vs away so makes modeling better
+
+```{r}
+# home
+home_results <- match_data_scaled %>%
+  select(Date, HomeTeam, FTHG, FTAG, HS, AS, HST, AST, HC, AC, HY, AY, HR, AR, FTR) %>%
+  rename(
+    Team = HomeTeam,
+    Goals_For = FTHG,
+    Goals_Against = FTAG,
+    Shots_For = HS,
+    Shots_Against = AS,
+    ShotsOnTarget_For = HST,
+    ShotsOnTarget_Against = AST,
+    Corners_For = HC,
+    Corners_Against = AC,
+    Yellows_For = HY,
+    Yellows_Against = AY,
+    Reds_For = HR,
+    Reds_Against = AR,
+    Result = FTR
+  ) %>%
+  mutate(Home_Away = "Home")
+# away
+away_results <- match_data_scaled %>%
+  select(Date, AwayTeam, FTAG, FTHG, AS, HS, AST, HST, AC, HC, AY, HY, AR, HR, FTR) %>%
+  rename(
+    Team = AwayTeam,
+    Goals_For = FTAG,
+    Goals_Against = FTHG,
+    Shots_For = AS,
+    Shots_Against = HS,
+    ShotsOnTarget_For = AST,
+    ShotsOnTarget_Against = HST,
+    Corners_For = AC,
+    Corners_Against = HC,
+    Yellows_For = AY,
+    Yellows_Against = HY,
+    Reds_For = AR,
+    Reds_Against = HR,
+    Result = FTR
+  ) %>%
+  mutate(Home_Away = "Away")
+# full history
+team_results <- bind_rows(home_results, away_results) %>%
+  arrange(Team, Date)
+```
+
+Create Weighted Past Features
+
+```{r}
+# more recent games are given a higher weight
+weights <- rev(1:10)
+
+# get weighted stats
+get_weighted_stats <- function(past_matches) {
+  n_matches <- nrow(past_matches)
+  # if 0  
+  if (n_matches == 0) {
+    return(tibble(
+      weighted_goals_for = NA,
+      weighted_goals_against = NA,
+      weighted_shots_for = NA,
+      weighted_shots_against = NA,
+      weighted_shots_on_target_for = NA,
+      weighted_shots_on_target_against = NA,
+      weighted_corners_for = NA,
+      weighted_corners_against = NA,
+      weighted_yellows_for = NA,
+      weighted_yellows_against = NA,
+      weighted_reds_for = NA,
+      weighted_reds_against = NA,
+      weighted_goal_diff = NA,
+      weighted_win_rate = NA
+    ))
+  }
+  
+  use_weights <- tail(weights, n_matches)
+  
+  tibble(
+    weighted_goals_for = weighted.mean(past_matches$Goals_For, use_weights),
+    weighted_goals_against = weighted.mean(past_matches$Goals_Against, use_weights),
+    weighted_shots_for = weighted.mean(past_matches$Shots_For, use_weights),
+    weighted_shots_against = weighted.mean(past_matches$Shots_Against, use_weights),
+    weighted_shots_on_target_for = weighted.mean(past_matches$ShotsOnTarget_For, use_weights),
+    weighted_shots_on_target_against = weighted.mean(past_matches$ShotsOnTarget_Against, use_weights),
+    weighted_corners_for = weighted.mean(past_matches$Corners_For, use_weights),
+    weighted_corners_against = weighted.mean(past_matches$Corners_Against, use_weights),
+    weighted_yellows_for = weighted.mean(past_matches$Yellows_For, use_weights),
+    weighted_yellows_against = weighted.mean(past_matches$Yellows_Against, use_weights),
+    weighted_reds_for = weighted.mean(past_matches$Reds_For, use_weights),
+    weighted_reds_against = weighted.mean(past_matches$Reds_Against, use_weights),
+    weighted_goal_diff = weighted.mean(past_matches$Goals_For - past_matches$Goals_Against, use_weights),
+    weighted_win_rate = weighted.mean(ifelse(past_matches$Result == "H" & 
+                                               past_matches$Home_Away == "Home", 1,
+                                              ifelse(past_matches$Result == "A" & 
+                                                       past_matches$Home_Away == "Away", 1, 
+                                                     ifelse(past_matches$Result == "D", 0.5, 0))), use_weights)
+  )
+}
+```
+
+Loop Over Game and attach what we just added
+
+```{r}
+# initalize
+home_features_list <- list()
+away_features_list <- list()
+
+for (i in 1:nrow(match_data_scaled)) {
+  match <- match_data_scaled[i, ]
+  # home
+  home_past <- team_results %>%
+    filter(Team == match$HomeTeam, Date < match$Date) %>%
+    arrange(desc(Date)) %>%
+    head(10)
+  home_features <- get_weighted_stats(home_past)
+  # away
+  away_past <- team_results %>%
+    filter(Team == match$AwayTeam, Date < match$Date) %>%
+    arrange(desc(Date)) %>%
+    head(10)
+  away_features <- get_weighted_stats(away_past)
+  
+  # attach
+  home_features_list[[i]] <- home_features
+  away_features_list[[i]] <- away_features
+}
+# home dataset
+home_features_df <- bind_rows(home_features_list) %>%
+  rename_with(~ paste0("Home_", .x))
+# away dataset
+away_features_df <- bind_rows(away_features_list) %>%
+  rename_with(~ paste0("Away_", .x))
+# final dataset
+model_data <- bind_cols(match_data_scaled, home_features_df, away_features_df)
+```
+
+*MODELING START*
+
+Predicting Full Time Result (FTR):
+
+Set Seed for Reproducability
+
+```{r}
+set.seed(486)
+```
+
+Dropping NA Values, believe this is because at start of season 10 games have not been completed yet
+
+```{r}
+model_data <- model_data %>%
+  drop_na(
+    B365H, B365D, B365A,
+    norm_prob_H, norm_prob_D, norm_prob_A,
+    Home_weighted_goals_for, Home_weighted_goals_against,
+    Away_weighted_goals_for, Away_weighted_goals_against,
+    Home_weighted_goal_diff, Away_weighted_goal_diff,
+    Home_weighted_win_rate, Away_weighted_win_rate
+  )
+```
+
+Chronoligcally Split Data
+
+```{r}
+train_data <- model_data %>% filter(Date < as.Date("2023-08-01"))
+test_data  <- model_data %>% filter(Date >= as.Date("2023-08-01"))
+```
+
+Logistic Regression (Baseline), Has to be multinomial cuz 3 possible outcomes
+
+```{r}
+logit_ftr_model <- train(
+  FTR ~ B365H + B365D + B365A +
+  norm_prob_H + norm_prob_D + norm_prob_A +
+  Home_weighted_goals_for + Home_weighted_goals_against +
+  Away_weighted_goals_for + Away_weighted_goals_against +
+  Home_weighted_goal_diff + Away_weighted_goal_diff +
+  Home_weighted_win_rate + Away_weighted_win_rate +
+  Home_weighted_shots_for + Home_weighted_shots_against +
+  Away_weighted_shots_for + Away_weighted_shots_against +
+  Home_weighted_shots_on_target_for + Away_weighted_shots_on_target_for +
+  Home_weighted_corners_for + Away_weighted_corners_for,
+  data = train_data,
+  method = "multinom",
+  trControl = trainControl(method = "none"),
+  trace = FALSE
+)
+# preds
+ftr_preds <- predict(logit_ftr_model, newdata = test_data)
+# confusion matrix
+confusionMatrix(ftr_preds, test_data$FTR)
+```
+
+LASSO Model
+
+```{r}
+lasso_ftr_model <- train(
+  FTR ~ B365H + B365D + B365A +
+  norm_prob_H + norm_prob_D + norm_prob_A +
+  Home_weighted_goals_for + Home_weighted_goals_against +
+  Away_weighted_goals_for + Away_weighted_goals_against +
+  Home_weighted_goal_diff + Away_weighted_goal_diff +
+  Home_weighted_win_rate + Away_weighted_win_rate +
+  Home_weighted_shots_for + Home_weighted_shots_against +
+  Away_weighted_shots_for + Away_weighted_shots_against +
+  Home_weighted_shots_on_target_for + Away_weighted_shots_on_target_for +
+  Home_weighted_corners_for + Away_weighted_corners_for,
+  data = train_data,
+  method = "glmnet",
+  family = "multinomial",
+  trControl = trainControl(method = "cv", number = 5),
+  tuneLength = 10
+)
+# preds
+ftr_preds_lasso <- predict(lasso_ftr_model, newdata = test_data)
+# confusion matrix
+confusionMatrix(ftr_preds_lasso, test_data$FTR)
+```
+
+XGBoost Model
+
+```{r}
+xgb_ftr_model <- train(
+  FTR ~ B365H + B365D + B365A +
+  norm_prob_H + norm_prob_D + norm_prob_A +
+  Home_weighted_goals_for + Home_weighted_goals_against +
+  Away_weighted_goals_for + Away_weighted_goals_against +
+  Home_weighted_goal_diff + Away_weighted_goal_diff +
+  Home_weighted_win_rate + Away_weighted_win_rate +
+  Home_weighted_shots_for + Home_weighted_shots_against +
+  Away_weighted_shots_for + Away_weighted_shots_against +
+  Home_weighted_shots_on_target_for + Away_weighted_shots_on_target_for +
+  Home_weighted_corners_for + Away_weighted_corners_for,
+  data = train_data,
+  method = "xgbTree",
+  trControl = trainControl(method = "cv", number = 3),
+  tuneLength = 3
+)
+```
+```{r}
+# seoerate shunks because of all the warning with xgBoost
+# preds
+ftr_preds_xgb <- predict(xgb_ftr_model, newdata = test_data)
+# confusion matrix
+confusionMatrix(ftr_preds_xgb, test_data$FTR)
+```
+
+Random Forest Model
+
+```{r}
+rf_ftr_model <- train(
+  FTR ~ B365H + B365D + B365A +
+  norm_prob_H + norm_prob_D + norm_prob_A +
+  Home_weighted_goals_for + Home_weighted_goals_against +
+  Away_weighted_goals_for + Away_weighted_goals_against +
+  Home_weighted_goal_diff + Away_weighted_goal_diff +
+  Home_weighted_win_rate + Away_weighted_win_rate +
+  Home_weighted_shots_for + Home_weighted_shots_against +
+  Away_weighted_shots_for + Away_weighted_shots_against +
+  Home_weighted_shots_on_target_for + Away_weighted_shots_on_target_for +
+  Home_weighted_corners_for + Away_weighted_corners_for,
+  data = train_data,
+  method = "rf",
+  trControl = trainControl(method = "cv", number = 5),
+  tuneLength = 5
+)
+```
+```{r}
+# preds
+ftr_preds_rf <- predict(rf_ftr_model, newdata = test_data)
+# confusion matrix
+confusionMatrix(ftr_preds_rf, test_data$FTR)
+```
+
+Compare Results
+
+```{r}
+# Compute accuracy manually for each model
+acc_rf_ftr    <- mean(ftr_preds_rf    == test_data$FTR)
+acc_xgb_ftr   <- mean(ftr_preds_xgb   == test_data$FTR)
+acc_lasso_ftr <- mean(ftr_preds_lasso == test_data$FTR)
+acc_log_ftr   <- mean(ftr_preds   == test_data$FTR)
+
+results <- data.frame(
+  Model    = c("Random Forest", "XGBoost", "Lasso", "Logistic Regression"),
+  Accuracy = c(acc_rf_ftr, acc_xgb_ftr, acc_lasso_ftr, acc_log_ftr)
+)
+
+# Plot using ggplot2
+ggplot(results, aes(x = Model, y = Accuracy, fill = Model)) +
+  geom_col(width = 0.6) +
+  ylim(0, 1) +
+  geom_text(aes(label = round(Accuracy, 3)), vjust = -0.5, size = 4.5) +
+  labs(
+    title = "Model Accuracy Comparison",
+    y = "Accuracy",
+    x = ""
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+Predicting Over/Under 2.5 Goals:
+
+Logistic Regression (Baseline)
+
+```{r}
+logit_ou_model <- train(
+  OU_2.5 ~ B365H + B365D + B365A +
+  norm_prob_H + norm_prob_D + norm_prob_A +
+  Home_weighted_goals_for + Home_weighted_goals_against +
+  Away_weighted_goals_for + Away_weighted_goals_against +
+  Home_weighted_goal_diff + Away_weighted_goal_diff +
+  Home_weighted_win_rate + Away_weighted_win_rate +
+  Home_weighted_shots_for + Home_weighted_shots_against +
+  Away_weighted_shots_for + Away_weighted_shots_against +
+  Home_weighted_shots_on_target_for + Away_weighted_shots_on_target_for +
+  Home_weighted_corners_for + Away_weighted_corners_for,
+  data = train_data,
+  method = "multinom",
+  trControl = trainControl(method = "none"),
+  trace = FALSE
+)
+# preds
+ou_preds <- predict(logit_ou_model, newdata = test_data)
+
+# confusion matrix
+confusionMatrix(ou_preds, test_data$OU_2.5)
+```
+
+LASSO Model
+
+```{r}
+lasso_ou_model <- train(
+  OU_2.5 ~ B365H + B365D + B365A +
+  norm_prob_H + norm_prob_D + norm_prob_A +
+  Home_weighted_goals_for + Home_weighted_goals_against +
+  Away_weighted_goals_for + Away_weighted_goals_against +
+  Home_weighted_goal_diff + Away_weighted_goal_diff +
+  Home_weighted_win_rate + Away_weighted_win_rate +
+  Home_weighted_shots_for + Home_weighted_shots_against +
+  Away_weighted_shots_for + Away_weighted_shots_against +
+  Home_weighted_shots_on_target_for + Away_weighted_shots_on_target_for +
+  Home_weighted_corners_for + Away_weighted_corners_for,
+  data = train_data,
+  method = "glmnet",
+  family = "multinomial",
+  trControl = trainControl(method = "cv", number = 5),
+  tuneLength = 10
+)
+# preds
+ou_preds_lasso <- predict(lasso_ou_model, newdata = test_data)
+# confusion matrix
+confusionMatrix(ou_preds_lasso, test_data$OU_2.5)
+```
+
+XGBoost Model
+
+```{r}
+xgb_ou_model <- train(
+  OU_2.5 ~ B365H + B365D + B365A +
+  norm_prob_H + norm_prob_D + norm_prob_A +
+  Home_weighted_goals_for + Home_weighted_goals_against +
+  Away_weighted_goals_for + Away_weighted_goals_against +
+  Home_weighted_goal_diff + Away_weighted_goal_diff +
+  Home_weighted_win_rate + Away_weighted_win_rate +
+  Home_weighted_shots_for + Home_weighted_shots_against +
+  Away_weighted_shots_for + Away_weighted_shots_against +
+  Home_weighted_shots_on_target_for + Away_weighted_shots_on_target_for +
+  Home_weighted_corners_for + Away_weighted_corners_for,
+  data = train_data,
+  method = "xgbTree",
+  trControl = trainControl(method = "cv", number = 3),
+  tuneLength = 3
+)
+```
+```{r}
+# seperate because of all the warnings
+# preds
+ou_preds_xgb <- predict(xgb_ou_model, newdata = test_data)
+# confusion matrix
+confusionMatrix(ou_preds_xgb, test_data$OU_2.5)
+```
+
+Random Forest Model
+
+```{r}
+rf_ou_model <- train(
+  OU_2.5 ~ B365H + B365D + B365A +
+  norm_prob_H + norm_prob_D + norm_prob_A +
+  Home_weighted_goals_for + Home_weighted_goals_against +
+  Away_weighted_goals_for + Away_weighted_goals_against +
+  Home_weighted_goal_diff + Away_weighted_goal_diff +
+  Home_weighted_win_rate + Away_weighted_win_rate +
+  Home_weighted_shots_for + Home_weighted_shots_against +
+  Away_weighted_shots_for + Away_weighted_shots_against +
+  Home_weighted_shots_on_target_for + Away_weighted_shots_on_target_for +
+  Home_weighted_corners_for + Away_weighted_corners_for,
+  data = train_data,
+  method = "rf",
+  trControl = trainControl(method = "cv", number = 5),
+  tuneLength = 5
+)
+```
+```{r}
+# Predictions
+ou_preds_rf <- predict(rf_ou_model, newdata = test_data)
+
+# Confusion Matrix
+confusionMatrix(ou_preds_rf, test_data$OU_2.5)
+```
+
+Compare Results
+
+```{r}
+# Compute accuracy manually for each model
+acc_rf    <- mean(ou_preds_rf    == test_data$OU_2.5)
+acc_xgb   <- mean(ou_preds_xgb   == test_data$OU_2.5)
+acc_lasso <- mean(ou_preds_lasso == test_data$OU_2.5)
+acc_log   <- mean(ou_preds   == test_data$OU_2.5)
+
+results <- data.frame(
+  Model    = c("Random Forest", "XGBoost", "Lasso", "Logistic Regression"),
+  Accuracy = c(acc_rf, acc_xgb, acc_lasso, acc_log)
+)
+
+# Plot using ggplot2
+ggplot(results, aes(x = Model, y = Accuracy, fill = Model)) +
+  geom_col(width = 0.6) +
+  ylim(0, 1) +
+  geom_text(aes(label = round(Accuracy, 3)), vjust = -0.5, size = 4.5) +
+  labs(
+    title = "Model Accuracy Comparison",
+    y = "Accuracy",
+    x = ""
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```

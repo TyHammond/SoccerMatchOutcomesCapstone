@@ -1,0 +1,142 @@
+---
+title: "Capstone_Intro"
+author: "Ty Hammond"
+date: "2025-04-07"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load Libraries
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(tidyr)
+```
+
+Load Dataset
+
+```{r}
+match_data <- read_csv("C:/Users/tyham/OneDrive - Colostate/Capstone_Project/combined_data.csv", show_col_types = FALSE)
+```
+
+
+Add the Implied Odds From Bet365 Odds
+
+```{r}
+match_data <- match_data %>%
+  mutate(
+    imp_prob_H = 1 / B365H,
+    imp_prob_D = 1 / B365D,
+    imp_prob_A = 1 / B365A,
+    total_prob = imp_prob_H + imp_prob_D + imp_prob_A,
+    norm_prob_H = imp_prob_H / total_prob,
+    norm_prob_D = imp_prob_D / total_prob,
+    norm_prob_A = imp_prob_A / total_prob
+  )
+```
+
+Add Over/Under 2.5 Goals Column
+
+```{r}
+match_data <- match_data %>%
+  mutate(OU_2.5 = ifelse(FTHG + FTAG > 2.5, "Over", "Under"))
+```
+
+EDA Data Quality Table
+
+```{r}
+eda_summary <- data.frame(
+  Column = colnames(match_data),
+  Type = sapply(match_data, function(x) class(x)[1]),
+  Num_Missing = sapply(match_data, function(x) sum(is.na(x))),
+  Pct_Missing = sapply(match_data, function(x) round(mean(is.na(x)) * 100, 2)),
+  Num_Unique = sapply(match_data, function(x) length(unique(na.omit(x)))),
+  Example_Values = sapply(match_data, function(x) {
+    if (is.numeric(x)) {
+      paste0("Min: ", min(x, na.rm = TRUE), ", Max: ", max(x, na.rm = TRUE))
+    } else {
+      paste0(head(na.omit(unique(x)), 3), collapse = ", ")
+    }
+  }),
+  stringsAsFactors = FALSE
+)
+eda_summary
+```
+
+Ensure Date Column is Formatted Correct
+
+```{r}
+match_data$Date <- as.Date(match_data$Date, format = "%Y-%m-%d")
+```
+
+Visualizations
+
+```{r}
+# Full Time Results
+# (Home win, Draw, Away Win)
+ggplot(match_data, aes(x = FTR)) +
+  geom_bar(fill = "blue", color = "black") +
+  labs(title = "Distribution of Full-Time Match Results",
+       x = "Result (H = Home Win, D = Draw, A = Away Win)", y = "Match Count") +
+  theme_minimal()
+
+# Over/Under 2.5 Goals
+ggplot(match_data, aes(x = OU_2.5)) +
+  geom_bar(fill = "blue", color = "black") +
+  labs(title = "Distribution of Over/Under 2.5 Goals",
+       x = "Total Match Goals", y = "Count") +
+  theme_minimal()
+
+# Goals Scored By Home Team Distribution
+ggplot(match_data, aes(x = FTHG)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+  labs(title = "Distribution of Home Team Goals",
+       x = "Goals Scored by Home Team", y = "Frequency") +
+  theme_minimal()
+
+# Goals Scored by Away Team Distribution
+ggplot(match_data, aes(x = FTAG)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "black") +
+  labs(title = "Distribution of Away Team Goals",
+       x = "Goals Scored by Away Team", y = "Frequency") +
+  theme_minimal()
+
+# Home - Away Implied Probability
+ggplot(match_data, aes(x = norm_prob_H - norm_prob_A)) +
+  geom_histogram(binwidth = 0.05, fill = "blue", color = "black") +
+  labs(title = "Distribution of Implied Home vs Away Probability Differences",
+       x = "Normalized Home Prob - Away Prob", y = "Frequency") +
+  theme_minimal()
+
+# Home Wins Odds Over Time
+ggplot(match_data, aes(x = Date, y = B365H)) +
+  geom_point(alpha = 0.3, color = "lightblue") +
+  geom_smooth(method = "loess", se = FALSE, color = "darkblue") +
+  labs(title = "Bet365 Home Win Odds Over Time",
+       x = "Date", y = "B365H (Home Win Odds)") +
+  theme_minimal()
+
+# Home wins odds 2023=2024 season
+# filter
+season_2324 <- match_data %>%
+  filter(Date >= as.Date("2023-08-01") & Date <= as.Date("2024-05-31"))
+#plot
+ggplot(season_2324, aes(x = B365H)) +
+  geom_histogram(binwidth = 0.25, fill = "blue", color = "black") +
+  labs(
+    title = "Distribution of Bet365 Home Win Odds (2023–2024 Season)",
+    x = "B365H (Home Win Odds)", y = "Number of Matches"
+  ) +
+  theme_minimal()
+```
+
+Save New Updated Dataset
+
+```{r}
+write_csv(match_data,"C:/Users/tyham/OneDrive - Colostate/Capstone_Project/match_data_eda.csv")
+```
