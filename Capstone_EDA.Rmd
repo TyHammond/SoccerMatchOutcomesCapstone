@@ -21,7 +21,7 @@ library(tidyr)
 Load Dataset
 
 ```{r}
-match_data <- read_csv("C:/Users/tyham/OneDrive - Colostate/Capstone_Project/combined_data.csv", show_col_types = FALSE)
+match_data <- read_csv("combined_data.csv", show_col_types = FALSE)
 ```
 
 
