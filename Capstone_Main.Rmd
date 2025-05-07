@@ -25,7 +25,7 @@ library(randomForest)
 Load Dataset
 
 ```{r}
-match_data <- read_csv("C:/Users/tyham/OneDrive - Colostate/Capstone_Project/match_data_eda.csv", show_col_types = FALSE)
+match_data <- read_csv("match_data_eda.csv", show_col_types = FALSE)
 ```
 
 *OVERALL DATA PREPROCESSING*
