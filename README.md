@@ -1,6 +1,9 @@
 # SoccerMatchOutcomesCapstone
+
 #README: Soccer Match Outcome Prediction using Machine Learning
+
 #Project Overview
+
 #This project aims to predict soccer match outcomes using match statistics and betting odds, combining traditional sports metrics with #implied probabilities. We build models to predict two key targets:
 #Full-Time Result (FTR): Win, Draw, or Loss
 #Over/Under 2.5 Goals (OU_2.5)
