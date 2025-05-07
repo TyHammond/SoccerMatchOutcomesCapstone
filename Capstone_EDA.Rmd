@@ -1,6 +1,6 @@
 ---
 title: "Capstone_Intro"
-author: "Ty Hammond"
+author: "Ty Hammond, Blake Hammarstrom"
 date: "2025-04-07"
 output: pdf_document
 ---
